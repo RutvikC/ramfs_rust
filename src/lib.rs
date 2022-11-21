@@ -107,5 +107,7 @@ impl RamFS {
     }
 
     // Out of all the function that the fuse::FileSystem implements there are handful of them which need tweaking
-    pub fn getattr
+    pub fn getattr(&mut self, ino: u64) -> Result<&FileAttr, Error> {
+        
+    }
 }
