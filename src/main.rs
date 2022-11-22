@@ -1,28 +1,40 @@
+// extern crates
+extern crate fuse;
+extern crate libc;
+extern crate time;
+#[macro_use]
 extern crate log;
 extern crate env_logger;
 
-extern crate ramfs; // crate to call structs from lib.rs
-
-use ramfs::{File, Inode};
+// Bindings
+use ramfs::RamFS;
+use std::env;
+//use std::ffi::OsStr;
 
 fn main() {
-    let mut file = File::new_file();
-    println!("\nThe initial size of the file is: {}", file.get_file_size());
+    // Init log level system (error, warn, info, debug, trace) for this program
+    env_logger::init();
 
-    let mut offset: i64 = 0;
-    let mut data: Vec<u8> = Vec::new();
-    data.extend([1, 2, 3, 4, 5].iter().copied());
-    file.update_file(offset, &data);
+    // Create a file system instance
+    let fs = RamFS::new();
 
-    offset = 3;
-    data.clear();
-    data.push(6);
-    file.update_file(offset, &data);
+    /* Extract the mountpoint from the command line argument
+     * If the argument is not found generate an error and return
+    */
+    let mountpoint = match env::args().nth(1) {
+        Some(path) => path,
+        None => {
+            error!("Usage: {} <mount_point>. Provide mountpoint argument", env::args().nth(0).unwrap());
+            return;
+        }
+    };
 
-    println!("The file contains {:?}", file.data);
+    // Options for fuse to name the file system
+    // let options = ["-o", "fsname=myramfs"]
+    //     .iter()
+    //     .map(|o| o.as_ref())
+    //     .collect::<Vec<&OsStr>>();
 
-    println!("The size of the file after updating is: {}", file.get_file_size());
-
-    let inode = Inode::new_inode("foo.txt".to_string(), 0); // For testing purpose we have given arbitary inode number for parent
-    println!("\nThe file name is '{}' and the parent Inode number is: {}", inode.name, inode.root);
+    // Mount the file system using fuse's mount api
+    fuse::mount(fs, &mountpoint, &[]).unwrap();
 }
