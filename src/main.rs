@@ -28,13 +28,7 @@ fn main() {
             return;
         }
     };
-
-    // Options for fuse to name the file system
-    // let options = ["-o", "fsname=myramfs"]
-    //     .iter()
-    //     .map(|o| o.as_ref())
-    //     .collect::<Vec<&OsStr>>();
-
+    
     // Mount the file system using fuse's mount api
     fuse::mount(fs, &mountpoint, &[]).unwrap();
 }
