@@ -440,7 +440,6 @@ impl Filesystem for RamFS {
                         //     i = i+1;
                         // }
                         // error!("FS ki size: {}", fs_size);
-
                         reply.written(size as u32);
                     }
                     None => {
