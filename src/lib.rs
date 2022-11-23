@@ -426,7 +426,6 @@ impl Filesystem for RamFS {
                             self.fs_size += (fp.get_file_size() as i64) - fp.old_size;
                             fp.old_size = fp.get_file_size() as i64;
                         }
-                        error!("FS size: {}", self.fs_size);
                         // let mut i:u64 = 1;
                         // let mut fs_size = 0;
                         // while i<=(self.next_inode as u64) {
