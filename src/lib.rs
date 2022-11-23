@@ -132,7 +132,7 @@ impl Filesystem for RamFS {
             // If no matching inode value found, then throw error
             None => {
                 error!("getattr: Cannot find inode: {}", ino);
-                reply.error(ENOENT)
+                reply.error(ENOENT); // File not found error
             },
         };
     }
@@ -181,87 +181,99 @@ impl Filesystem for RamFS {
             }
             None => {
                 error!("setattr: Cannot find inode: {}", ino);
-                reply.error(ENOENT);
+                reply.error(ENOENT); // File not found error
             }
         }
     }
 
+    /* This function reads all the files and directory in the current directory */
     fn readdir(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
-        let mut entries = vec![];
-        entries.push((ino, FileType::Directory, "."));
+        let mut entries = Vec::new(); // Create an empty Vec to push all the files into this
+        entries.push((ino, FileType::Directory, ".")); // pushing this directory first
         if let Some(inode) = self.inodes.get(&ino) {
-            entries.push((inode.root, FileType::Directory, ".."));
-            for (child, child_ino) in &inode.nodes {
+            entries.push((inode.root, FileType::Directory, "..")); // pushing parent directory second
+            for (child, child_ino) in &inode.nodes { // pushing all the children in this directory
                 let child_attrs = &self.attrs.get(child_ino).unwrap();
                 entries.push((child_attrs.ino, child_attrs.kind, &child));
             }
-
             if entries.len() > 0 {
-                // Offset of 0 means no offset.
-                // Non-zero offset means the passed offset has already been seen, and we should start after
-                // it.
+                // Basically we need to add all the entries in ReplyAttr, but need to check if offset==0
+                // otherwise the readdir() will be stuck in infinite loop.
+                // When offset!=0, it means the passed offset has already been taken care off, and should skip it
                 let to_skip = if offset == 0 { offset } else { offset + 1 } as usize;
                 for (i, entry) in entries.into_iter().enumerate().skip(to_skip) {
                     reply.add(entry.0, i as i64, entry.1, entry.2);
                 }
             }
             reply.ok();
-        } else {
-            error!("readdir: cannot find inode: {} in filesystem's inodes", ino);
-            reply.error(ENOENT)
+        } 
+        else {
+            error!("readdir: cannot find inode: {}", ino);
+            reply.error(ENOENT) // File not found error
         }
     }
 
+    /* This function actually replies FileType based on the 'ino' number */
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         match self.inodes.get(&parent) {
+            // First get the parent inode
             Some(parent_ino) => {
                 let inode = match parent_ino.nodes.get(name.to_str().unwrap()) {
-                    Some(inode) => inode,
+                    Some(inode) => inode, // Find if the inode is linked to parent or not
                     None => {
                         error!("lookup: {} is not in parent's {} children", name.to_str().unwrap(), parent);
                         reply.error(ENOENT);
                         return;
                     }
                 };
-                match self.attrs.get(inode) {
+                match self.attrs.get(inode) { // get the attributes of inode to send to reply
                     Some(attr) => {
                         reply.entry(&Timespec::new(1,0), attr, 0);
                     }
                     None => {
-                        error!("lookup: inode {} is not in filesystem's attributes", inode);
-                        reply.error(ENOENT);
+                        error!("lookup: cannot find inode: {}", inode);
+                        reply.error(ENOENT); // File not found error
                     }
                 };
             },
+            // Parent inode not found
             None => {
-                error!("lookup: parent inode {} is not in filesystem's attributes", parent);
-                reply.error(ENOENT);
+                error!("lookup: parent inode: {} not found", parent);
+                reply.error(ENOENT); // File not found error
             }
         };
     }
 
+    /* This function removes a directory form the file-system */
     fn rmdir(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let mut rmdir_ino = 0;
-        if let Some(parent_ino) = self.inodes.get_mut(&parent) {
-            match parent_ino.nodes.get(&name.to_str().unwrap().to_string()) {
+        if let Some(parent_ino) = self.inodes.get_mut(&parent) { // first find the parent inode value
+            match parent_ino.nodes.get(&name.to_str().unwrap().to_string()) { // then check if the FileType of 'name' exists
                 Some(dir_ino) => {
                     rmdir_ino = *dir_ino;
                 }
+                // If not there, return error
                 None => {
                     error!("rmdir: {} is not in parent's {} children", name.to_str().unwrap(), parent);
-                    reply.error(ENOENT);
+                    reply.error(ENOENT); // File not found error
                     return;
                 }
             }
         }
+        // Removing the FileType after searching if its there
         if let Some(dir) = self.inodes.get_mut(&rmdir_ino) {
+            // Fist check if the directory is empty or not
             if dir.nodes.is_empty() {
                 self.attrs.remove(&rmdir_ino);
-            } else {
-                reply.error(ENOTEMPTY);
+            } 
+            // else return error when removing
+            else {
+                error!("rmdir: failed to remove '{}': Directory not empty", dir.name);
+                reply.error(ENOTEMPTY); // File is not empty error
                 return;
             }
         }
+        // If it's a file then remove it from the parent inode tree
         if let Some(parent_ino) = self.inodes.get_mut(&parent) {
             parent_ino.nodes.remove(&name.to_str().unwrap().to_string());
         }
@@ -269,10 +281,11 @@ impl Filesystem for RamFS {
         reply.ok();
     }
 
+    /* This function is used to create directory in the file-system */
     fn mkdir(&mut self, _req: &Request, parent: u64, name: &OsStr, _mode: u32, reply: ReplyEntry) {
         let ts = time::now().to_timespec();
         let attr = FileAttr {
-            ino: self.get_next_inode(),
+            ino: self.get_next_inode(), // get the next inode to add it under the parent
             size: 0,
             blocks: 0,
             atime: ts,
@@ -280,45 +293,52 @@ impl Filesystem for RamFS {
             ctime: ts,
             crtime: ts,
             kind: FileType::Directory,
-            perm: 0o644,
+            perm: 0o755,
             nlink: 0,
             uid: 0,
             gid: 0,
             rdev: 0,
             flags: 0,
         };
-
+        // Check if a parent exists or not
         if let Some(parent_ino) = self.inodes.get_mut(&parent) {
+            // Check if the directory already exists or not
             if parent_ino.nodes.contains_key(name.to_str().unwrap()) {
-                reply.error(EEXIST);
+                reply.error(EEXIST); // File exists error
                 return;
             }
+            // If not then just add a new dir to current parent inode
             parent_ino.nodes.insert(name.to_str().unwrap().to_string(), attr.ino);
             self.attrs.insert(attr.ino, attr);
-        } else {
-            error!("mkdir: parent {} is not in filesystem inodes", parent);
-            reply.error(EINVAL);
+        }
+        else {
+            error!("mkdir: cannot find parent {}", parent);
+            reply.error(EINVAL); // Invalid argument error
             return;
         }
+        // Create a new parent inode and then add it to existing tree
         self.inodes.insert(attr.ino, Inode::new_inode(name.to_str().unwrap().to_string(), parent));
         reply.entry(&Timespec::new(1,0), &attr, 0)
     }
 
+    /* This function to open a file similar to 'touch' command */
     fn open(&mut self, _req: &Request, _ino: u64, _flags: u32, reply: ReplyOpen) {
         reply.opened(0, 0);
     }
 
+    /* This function is remove a file from a parent directory */
     fn unlink(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        let mut old_ino = 0;
+        let mut old_ino = 0; // variable to store previous inode value
+        // first check if its not the root directory
         if let Some(parent_ino) = self.inodes.get_mut(&parent) {
-            match parent_ino.nodes.remove(&name.to_str().unwrap().to_string()) {
+            match parent_ino.nodes.remove(&name.to_str().unwrap().to_string()) { // check if the child is in parent or not
                 Some(ino) => {
-                    match self.attrs.remove(&ino) {
+                    match self.attrs.remove(&ino) { // check 
                         Some(attr) => {
                             if attr.kind == FileType::RegularFile{
-                                self.files.remove(&ino);
+                                self.files.remove(&ino); // if it's a file then remove it from FS
                             }
-                            old_ino = ino;
+                            old_ino = ino; // and update the previous inode number with current inode
                         },
                         None => {
                             old_ino = ino;
@@ -332,22 +352,24 @@ impl Filesystem for RamFS {
                 }
             }
         };
-        self.inodes.remove(&old_ino);
+        self.inodes.remove(&old_ino); // This will remove the root directory inode if the old_ino is not updated
         reply.ok();
     }
 
+    /* This function is used to create a file/dir in the file-system */
     fn create(&mut self, _req: &Request, parent: u64, name: &OsStr, _mode: u32, _flags: u32, reply: ReplyCreate) {
-        let new_ino = self.get_next_inode();
+        let new_ino = self.get_next_inode(); // first get the next inode
         match self.inodes.get_mut(&parent) {
             Some(parent_ino) => {
-                if let Some(ino) = parent_ino.nodes.get_mut(&name.to_str().unwrap().to_string()) {
-                    reply.created(&Timespec::new(1,0), self.attrs.get(&ino).unwrap(), 0, 0 ,0);
-                    return;
-                } 
+                if let Some(ino) = parent_ino.nodes.get_mut(&name.to_str().unwrap().to_string()) { // if it exists then just update ReplyCreate, time of file and exit 
+                    reply.created(&Timespec::new(1,0), self.attrs.get(&ino).unwrap(), 0, 0 ,0); 
+                    return; // no need to throw an error
+                }
+                // just create a new file if not present then
                 else {
                     let ts = time::now().to_timespec();
                     let attr = FileAttr {
-                        ino: new_ino,
+                        ino: new_ino, // update it with the new inode value
                         size: 0,
                         blocks: 0,
                         atime: ts,
@@ -362,44 +384,50 @@ impl Filesystem for RamFS {
                         rdev: 0,
                         flags: 0,
                     };
-                    self.attrs.insert(attr.ino, attr);
-                    self.files.insert(attr.ino, File::new_file());
-                    reply.created(&Timespec::new(1,0), &attr, 0, 0, 0);
+                    self.attrs.insert(attr.ino, attr); // Update file's attributes with it's respective inode value
+                    self.files.insert(attr.ino, File::new_file()); // create a new file and add it to the FS
+                    reply.created(&Timespec::new(1,0), &attr, 0, 0, 0); // update ReplyCreate with new timestamp
                 }
+                // insert current file-node with rest of the nodes
                 parent_ino.nodes.insert(name.to_str().unwrap().to_string(), new_ino);
             }
             None => {
-                error!("create: parent {} is not in filesystem's inodes", parent);
-                reply.error(EINVAL);
+                error!("create: cannot find parent: {}", parent);
+                reply.error(EINVAL); // Invalid argument error 
                 return;
             }
         }
+        // insert current inode value to the list of all the other inodes
         self.inodes.insert(new_ino, Inode::new_inode(name.to_str().unwrap().to_string(), parent));
     }
 
+    /* This function is used to write something in a file */
     fn write(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, data: &[u8], _flags: u32, reply: ReplyWrite) {
-        let ts = time::now().to_timespec();
-        match self.files.get_mut(&ino) {
+        let ts = time::now().to_timespec(); // get the current time stamp
+        match self.files.get_mut(&ino) { // find the file first
             Some(fp) => {
-                match self.attrs.get_mut(&ino) {
+                match self.attrs.get_mut(&ino) { // get the file's attributes
                     Some(attr) => {
-                        let size = fp.update_file(offset, &data);
-                        attr.atime = ts;
+                        let size = fp.update_file(offset, &data); // write the additional data to the file
+                        attr.atime = ts; // update the timestamp
                         attr.mtime = ts;
-                        attr.size = fp.get_file_size();
+                        attr.size = fp.get_file_size(); // update the new size to the file's attribute
                         reply.written(size as u32);
                     }
                     None => {
-                        error!("write: ino {} is not in filesystem's attributes", ino);
-                        reply.error(ENOENT);
+                        error!("write: cannot find ino: {}", ino);
+                        reply.error(ENOENT); // No such file or directory error
                     }
                 }
             }
-            None => reply.error(ENOENT),
+            // if file doesn't exist then throw error
+            None => reply.error(ENOENT), // No such file or directory error
         }
     }
 
-    fn read(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, _size: u32, reply: ReplyData) {   
+    /* This functions is there to read a file */
+    fn read(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, _size: u32, reply: ReplyData) {  
+        // similar to write(), but there is no updation only writing to the ReplyData 
         match self.files.get_mut(&ino) {
             Some(fp) => {
                 let mut thread_attrs = self.attrs.clone();
@@ -410,41 +438,44 @@ impl Filesystem for RamFS {
                         reply.data(&thread_fp.data[offset as usize..]);
                     },
                     None => {
-                        error!("read: ino {} is not in filesystem's attributes", ino);
-                        reply.error(ENOENT);
+                        error!("read: cannot find ino: {}", ino);
+                        reply.error(ENOENT); // No such file or directory error
                     },
                 }
             }
             None => {
-                reply.error(ENOENT);
+                reply.error(ENOENT); // No such file or directory error
             }
         }
     }
 
+    /* This function is to rename a file or directory in the FS */
     fn rename(&mut self, _req: &Request, parent: u64, name: &OsStr, newparent: u64, newname: &OsStr, reply: ReplyEmpty) {
+        // First find the file with the passed 'ino' value
         if self.inodes.contains_key(&parent) && self.inodes.contains_key(&newparent) {
             let file_ino;
             match self.inodes.get_mut(&parent) {
-                Some(parent_ino) => {
+                Some(parent_ino) => { // remove the older version of the file and its existence
                     if let Some(ino) = parent_ino.nodes.remove(&name.to_str().unwrap().to_string()) {
                         file_ino = ino;
-                    } else {
+                    } 
+                    else {
                         error!("{} not found in parent {}", name.to_str().unwrap().to_string(), parent);
-                        reply.error(ENOENT);
+                        reply.error(ENOENT); // No such file or directory error
                         return;
                     }
                 }
                 None => {
-                    error!("rename: parent {} is not in filesystem inodes", parent);
+                    error!("rename: cannot find parent: {}", parent);
                     reply.error(EINVAL);
                     return;
                 }
             }
+            // Update the new file name and its new inode value
             if let Some(newparent_ino) = self.inodes.get_mut(&newparent) {
                 newparent_ino.nodes.insert(newname.to_str().unwrap().to_string(), file_ino);
-
             }
         }
-        reply.ok();
+        reply.ok(); // reply to a request with nothing
     }
 }
