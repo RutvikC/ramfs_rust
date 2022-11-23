@@ -15,7 +15,6 @@ use fuse::{FileAttr, FileType, Filesystem, Request,
     ReplyEmpty, ReplyWrite, ReplyOpen, ReplyCreate};
 use time::Timespec; // This library is used to get system-time
 
-const TTL: Timespec = Timespec { sec: 1, nsec: 0 };
 
 #[derive(Debug, Clone, Default)]
 pub struct File {
@@ -50,7 +49,7 @@ impl File {
         append_data.len() as u64
     }
 
-    /* Truncates from u64 to usize */
+    /* Shortens the vector, keeping the first 'size' elements and dropping the rest. */
     fn truncate_bytes(&mut self, size: u64) {
         self.data.truncate(size as usize);
     }
@@ -69,7 +68,6 @@ impl Inode {
     fn new_inode(label: String, parent: u64) -> Inode {
         Inode{name: label, nodes: BTreeMap::new(), root: parent,}
     }
-    // Will add additional functionality when needed for the full file-system
 }
 
 pub struct RamFS {
@@ -115,8 +113,8 @@ impl RamFS {
         }
     }
 
-    // Other functions necessary for managing a File-system
-    fn get_next_ino(&mut self) -> u64 { // This is function is straight-up from ramFS in linux
+    /* Returns the next inode value in filesystem tree*/
+    fn get_next_inode(&mut self) -> u64 { // This is function is straight-up from ramFS in linux
         self.next_inode += 1;
         self.next_inode
     }
@@ -124,60 +122,65 @@ impl RamFS {
 
 // Out of all the function that the fuse::FileSystem implements there are handful of them which need tweaking
 impl Filesystem for RamFS {
+
+    /* This function gets the file's attributes for specified 'ino' value */
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         match self.attrs.get_mut(&ino) {
             Some(attr) => {
-                reply.attr(&TTL, attr);
+                reply.attr(&Timespec::new(1,0), attr);
             }
+            // If no matching inode value found, then throw error
             None => {
-                error!("getattr: Cannot find inode: {} in filesystem's attributes", ino);
+                error!("getattr: Cannot find inode: {}", ino);
                 reply.error(ENOENT)
             },
         };
     }
 
+    /* This function updates the FileType at 'ino' attributes */
+    // There are only a handful of attributes that can actually be changed once a FileType is instantiated
     fn setattr(&mut self, _req: &Request, ino: u64, _mode: Option<u32>, uid: Option<u32>, gid: Option<u32>, size: Option<u64>, atime: Option<Timespec>, mtime: Option<Timespec>, _fh: Option<u64>, crtime: Option<Timespec>, _chgtime: Option<Timespec>, _bkuptime: Option<Timespec>, _flags: Option<u32>, reply: ReplyAttr) {
         match self.attrs.get_mut(&ino) {
-            Some(fp) => {
+            // After getting the matched ino FileType, update the new attribute values
+            Some(attr) => {
+                match atime {
+                    Some(new_atime) => attr.atime = new_atime,
+                    None => {}
+                }
+                match mtime {
+                    Some(new_mtime) => attr.mtime = new_mtime,
+                    None => {}
+                }
+                match crtime {
+                    Some(new_crtime) => attr.crtime = new_crtime,
+                    None => {}
+                }
                 match uid {
                     Some(new_uid) => {
-                        fp.uid = new_uid;
+                        attr.uid = new_uid;
                     }
                     None => {}
                 }
                 match gid {
                     Some(new_gid) => {
-                        fp.gid = new_gid;
+                        attr.gid = new_gid;
                     }
-                    None => {}
-                }
-                match atime {
-                    Some(new_atime) => fp.atime = new_atime,
-                    None => {}
-                }
-                match mtime {
-                    Some(new_mtime) => fp.mtime = new_mtime,
-                    None => {}
-                }
-                match crtime {
-                    Some(new_crtime) => fp.crtime = new_crtime,
                     None => {}
                 }
                 match size {
                     Some(new_size) => {
                         if let Some(memfile) = self.files.get_mut(&ino) {
+                            // First actually update the bytes in the file and then update the attr value
                             memfile.truncate_bytes(new_size);
-                            fp.size = new_size;
-                        } else {
-                            return;
+                            attr.size = new_size;
                         }
                     }
                     None => {}
                 }
-                reply.attr(&TTL, fp);
+                reply.attr(&Timespec::new(1,0), attr);
             }
             None => {
-                error!("setattr: Cannot find inode: {} in filesystem's attributes", ino);
+                error!("setattr: Cannot find inode: {}", ino);
                 reply.error(ENOENT);
             }
         }
@@ -222,7 +225,7 @@ impl Filesystem for RamFS {
                 };
                 match self.attrs.get(inode) {
                     Some(attr) => {
-                        reply.entry(&TTL, attr, 0);
+                        reply.entry(&Timespec::new(1,0), attr, 0);
                     }
                     None => {
                         error!("lookup: inode {} is not in filesystem's attributes", inode);
@@ -269,7 +272,7 @@ impl Filesystem for RamFS {
     fn mkdir(&mut self, _req: &Request, parent: u64, name: &OsStr, _mode: u32, reply: ReplyEntry) {
         let ts = time::now().to_timespec();
         let attr = FileAttr {
-            ino: self.get_next_ino(),
+            ino: self.get_next_inode(),
             size: 0,
             blocks: 0,
             atime: ts,
@@ -298,7 +301,7 @@ impl Filesystem for RamFS {
             return;
         }
         self.inodes.insert(attr.ino, Inode::new_inode(name.to_str().unwrap().to_string(), parent));
-        reply.entry(&TTL, &attr, 0)
+        reply.entry(&Timespec::new(1,0), &attr, 0)
     }
 
     fn open(&mut self, _req: &Request, _ino: u64, _flags: u32, reply: ReplyOpen) {
@@ -334,11 +337,11 @@ impl Filesystem for RamFS {
     }
 
     fn create(&mut self, _req: &Request, parent: u64, name: &OsStr, _mode: u32, _flags: u32, reply: ReplyCreate) {
-        let new_ino = self.get_next_ino();
+        let new_ino = self.get_next_inode();
         match self.inodes.get_mut(&parent) {
             Some(parent_ino) => {
                 if let Some(ino) = parent_ino.nodes.get_mut(&name.to_str().unwrap().to_string()) {
-                    reply.created(&TTL, self.attrs.get(&ino).unwrap(), 0, 0 ,0);
+                    reply.created(&Timespec::new(1,0), self.attrs.get(&ino).unwrap(), 0, 0 ,0);
                     return;
                 } 
                 else {
@@ -361,7 +364,7 @@ impl Filesystem for RamFS {
                     };
                     self.attrs.insert(attr.ino, attr);
                     self.files.insert(attr.ino, File::new_file());
-                    reply.created(&TTL, &attr, 0, 0, 0);
+                    reply.created(&Timespec::new(1,0), &attr, 0, 0, 0);
                 }
                 parent_ino.nodes.insert(name.to_str().unwrap().to_string(), new_ino);
             }
