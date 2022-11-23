@@ -28,7 +28,7 @@ fn main() {
             return;
         }
     };
-    
+
     // Mount the file system using fuse's mount api
     fuse::mount(fs, &mountpoint, &[]).unwrap();
 }

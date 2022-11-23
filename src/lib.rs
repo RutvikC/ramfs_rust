@@ -7,7 +7,6 @@ extern crate env_logger;
 
 use std::iter;
 use std::collections::BTreeMap;
-//use log::debug; // Used to print messages on terminal directly
 use std::ffi::OsStr;
 use libc::{ENOENT, EINVAL, EEXIST, ENOTEMPTY};
 use fuse::{FileAttr, FileType, Filesystem, Request,
@@ -15,16 +14,17 @@ use fuse::{FileAttr, FileType, Filesystem, Request,
     ReplyEmpty, ReplyWrite, ReplyOpen, ReplyCreate};
 use time::Timespec; // This library is used to get system-time
 
-
 #[derive(Debug, Clone, Default)]
 pub struct File {
     data: Vec<u8>, // had to change this because append_data is a vector of 8-bit unsigned int
+    is_updated: bool,
+    old_size: i64,
 }
 
 impl File {
     /* Creates a new attribute for File*/
     fn new_file() -> File {
-        File{data: Vec::new()}
+        File{data: Vec::new(), is_updated: false, old_size: 0}
     }
 
     /* Returns the number of bytes of data in the file*/
@@ -75,6 +75,7 @@ pub struct RamFS {
     attrs: BTreeMap<u64, FileAttr>,
     inodes: BTreeMap<u64, Inode>,
     next_inode: u64,
+    fs_size: i64,
 }
 
 impl RamFS {
@@ -87,7 +88,7 @@ impl RamFS {
         let attr = FileAttr { // Defining attributes for root directory
             ino: 1, //u64 Since the inode-value of our root directory is 1
             size: 0, //u64,
-            blocks: 0, //u64,
+            blocks: 1, //u64,
             atime: ts, //Timespec,
             mtime: ts, //Timespec,
             ctime: ts, //Timespec,
@@ -110,6 +111,7 @@ impl RamFS {
             attrs: root_dir_attrs,
             inodes: root_dir_inode,
             next_inode: 2, // Moving in order after creating the initial root directory
+            fs_size: 0,
         }
     }
 
@@ -335,6 +337,7 @@ impl Filesystem for RamFS {
                 Some(ino) => {
                     match self.attrs.remove(&ino) { // check 
                         Some(attr) => {
+                            self.fs_size -= attr.size as i64;
                             if attr.kind == FileType::RegularFile{
                                 self.files.remove(&ino); // if it's a file then remove it from FS
                             }
@@ -404,6 +407,8 @@ impl Filesystem for RamFS {
     /* This function is used to write something in a file */
     fn write(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, data: &[u8], _flags: u32, reply: ReplyWrite) {
         let ts = time::now().to_timespec(); // get the current time stamp
+        //error!("ino: {}", ino);
+        //error!("next_inode: {}", self.next_inode);
         match self.files.get_mut(&ino) { // find the file first
             Some(fp) => {
                 match self.attrs.get_mut(&ino) { // get the file's attributes
@@ -412,6 +417,31 @@ impl Filesystem for RamFS {
                         attr.atime = ts; // update the timestamp
                         attr.mtime = ts;
                         attr.size = fp.get_file_size(); // update the new size to the file's attribute
+                        if size !=4096 && !fp.is_updated {
+                            self.fs_size += fp.get_file_size() as i64;
+                            fp.is_updated = true;
+                            fp.old_size = fp.get_file_size() as i64;
+                        }
+                        else if size != 4096 {
+                            self.fs_size += (fp.get_file_size() as i64) - fp.old_size;
+                            fp.old_size = fp.get_file_size() as i64;
+                        }
+                        error!("FS size: {}", self.fs_size);
+                        // let mut i:u64 = 1;
+                        // let mut fs_size = 0;
+                        // while i<=(self.next_inode as u64) {
+                        //     error!("before match");
+                        //     match self.attrs.get_mut(&i) {
+                        //         Some(ar) => {
+                        //             error!("ar_size: {}", ar.size);
+                        //             fs_size += ar.size
+                        //         }
+                        //         None => {}
+                        //     }
+                        //     i = i+1;
+                        // }
+                        // error!("FS ki size: {}", fs_size);
+
                         reply.written(size as u32);
                     }
                     None => {
