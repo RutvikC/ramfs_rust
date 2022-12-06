@@ -9,7 +9,6 @@ extern crate env_logger;
 // Bindings
 use ramfs::RamFS;
 use std::env;
-//use std::ffi::OsStr;
 
 fn main() {
     // Init log level system (error, warn, info, debug, trace) for this program
